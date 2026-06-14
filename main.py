@@ -1,339 +1,156 @@
 # -*- coding: utf-8 -*-
 import os
+import json
 import requests
 from flask import Flask, request
 
 TOKEN = os.environ.get("BOT_TOKEN")
 API = f"https://tapi.bale.ai/bot{TOKEN}/"
-
 CHANNEL_ID = "@wamsara"
+DB_FILE = "polls_db.json"
 
 app = Flask(__name__)
 
-polls = {}
-user_state = {}
+# بارگذاری داده‌ها از فایل برای جلوگیری از پاک شدن
+def load_db():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
-# ---------------- API ----------------
+def save_db(data):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=4)
+
+polls = load_db()
+user_state = {}
 
 def bot_api(method, data=None):
     try:
         return requests.post(API + method, json=data).json()
-    except:
-        return None
-
+    except: return None
 
 def get_bot_username():
     r = bot_api("getMe")
-    if r and r.get("ok"):
-        return r["result"]["username"]
-    return "yourbot"
-
-
-# ---------------- Membership ----------------
+    return r["result"]["username"] if r and r.get("ok") else "bot"
 
 def check_membership(user_id):
-    r = bot_api("getChatMember", {
-        "chat_id": CHANNEL_ID,
-        "user_id": user_id
-    })
-    if not r or not r.get("ok"):
-        return False
+    r = bot_api("getChatMember", {"chat_id": CHANNEL_ID, "user_id": user_id})
+    if r and r.get("ok"):
+        return r["result"]["status"] in ["creator", "administrator", "member"]
+    return False
 
-    status = r["result"]["status"]
-    return status in ["creator", "administrator", "member"]
-
-
-# ---------------- Poll Rendering ----------------
-
-def render_poll(poll_id, poll, selected=None):
+def render_poll(p_id, poll, selected=None):
     buttons = []
-
-    total_votes = sum(poll["votes"])
-
+    total = sum(poll["votes"])
     for i, opt in enumerate(poll["opts"]):
-
-        vote_count = poll["votes"][i]
-        percent = 0
-        if total_votes > 0:
-            percent = round((vote_count / total_votes) * 100)
-
-        text = f"{opt} ({percent}% - {vote_count})"
-
-        if selected == i:
-            text = f"🟡 ✅ {opt} ✅ 🟡 ({percent}% - {vote_count})"
-
-        buttons.append([{
-            "text": text,
-            "callback_data": f"v_{poll_id}_{i}"
-        }])
-
+        v = poll["votes"][i]
+        p = round((v/total)*100) if total > 0 else 0
+        txt = f"{opt} ({p}% - {v})"
+        if selected == i: txt = f"🟡 ✅ {opt} ✅ 🟡 ({p}% - {v})"
+        buttons.append([{"text": txt, "callback_data": f"v_{p_id}_{i}"}])
     return {"inline_keyboard": buttons}
-
-
-# ---------------- Routes ----------------
 
 @app.route("/", methods=["POST"])
 def webhook():
-
+    global polls
     data = request.json
-
+    
     if "message" in data:
-
         msg = data["message"]
         chat_id = msg["chat"]["id"]
         user_id = msg["from"]["id"]
-
         text = msg.get("text", "")
 
         if text.startswith("/start"):
-
             parts = text.split()
-
-            # start poll
             if len(parts) > 1:
-
                 p_id = parts[1]
-
                 poll = polls.get(p_id)
-
                 if not poll:
-                    bot_api("sendMessage", {
-                        "chat_id": chat_id,
-                        "text": "❌ این نظرسنجی وجود ندارد."
-                    })
+                    bot_api("sendMessage", {"chat_id": chat_id, "text": "❌ نظرسنجی یافت نشد."})
                     return "ok"
-
-                # membership check
+                
                 if not check_membership(user_id):
-
-                    buttons = {
-                        "inline_keyboard": [
-                            [{"text": "📢 عضویت در کانال", "url": f"https://ble.ir/{CHANNEL_ID.replace('@','')}"}],
-                            [{"text": "❓ عضو شدم", "callback_data": f"checkjoin_{p_id}"}]
-                        ]
-                    }
-
-                    bot_api("sendMessage", {
-                        "chat_id": chat_id,
-                        "text": f"برای شرکت در نظرسنجی ابتدا عضو کانال {CHANNEL_ID} شوید.",
-                        "reply_markup": buttons
-                    })
-
+                    btns = {"inline_keyboard": [
+                        [{"text": "📢 عضویت در کانال", "url": f"https://ble.ir/{CHANNEL_ID[1:]}"}],
+                        [{"text": "❓ عضو شدم", "callback_data": f"check_{p_id}"}]
+                    ]}
+                    bot_api("sendMessage", {"chat_id": chat_id, "text": f"لطفاً برای شرکت در نظرسنجی ابتدا در کانال {CHANNEL_ID} عضو شوید.", "reply_markup": btns})
                     return "ok"
 
-                # show poll
-                keyboard = render_poll(p_id, poll)
-
-                if poll["img"]:
-                    bot_api("sendPhoto", {
-                        "chat_id": chat_id,
-                        "photo": poll["img"],
-                        "caption": f"📊 {poll['q']}",
-                        "reply_markup": keyboard
-                    })
+                kb = render_poll(p_id, poll)
+                if poll.get("img"):
+                    bot_api("sendPhoto", {"chat_id": chat_id, "photo": poll["img"], "caption": f"📊 {poll['q']}", "reply_markup": kb})
                 else:
-                    bot_api("sendMessage", {
-                        "chat_id": chat_id,
-                        "text": f"📊 {poll['q']}",
-                        "reply_markup": keyboard
-                    })
-
+                    bot_api("sendMessage", {"chat_id": chat_id, "text": f"📊 {poll['q']}", "reply_markup": kb})
                 return "ok"
 
-            # create poll
             user_state[user_id] = {"step": "q"}
-            bot_api("sendMessage", {
-                "chat_id": chat_id,
-                "text": "سوال نظرسنجی را ارسال کنید:"
-            })
+            bot_api("sendMessage", {"chat_id": chat_id, "text": "لطفاً سوال نظرسنجی را بفرستید:"})
 
         elif user_id in user_state:
-
-            state = user_state[user_id]
-
-            if state["step"] == "q":
-                state["q"] = text
-                state["opts"] = []
-                state["img"] = None
-                state["step"] = "opt"
-
-                bot_api("sendMessage", {
-                    "chat_id": chat_id,
-                    "text": "گزینه اول را بفرستید:"
-                })
-
-            elif state["step"] == "opt":
-
+            st = user_state[user_id]
+            if st["step"] == "q":
+                st.update({"q": text, "opts": [], "img": None, "step": "opt"})
+                bot_api("sendMessage", {"chat_id": chat_id, "text": "حالا گزینه اول را بفرستید:"})
+            elif st["step"] == "opt":
                 if text == "/done":
-
-                    if len(state["opts"]) < 2:
-                        bot_api("sendMessage", {
-                            "chat_id": chat_id,
-                            "text": "حداقل دو گزینه لازم است."
-                        })
-                        return "ok"
-
-                    p_id = str(len(polls) + 1)
-
-                    polls[p_id] = {
-                        "q": state["q"],
-                        "img": state["img"],
-                        "opts": state["opts"],
-                        "votes": [0]*len(state["opts"]),
-                        "users": {},
-                        "creator": user_id
-                    }
-
-                    bot_username = get_bot_username()
-                    link = f"https://ble.ir/{bot_username}?start={p_id}"
-
-                    btn = {
-                        "inline_keyboard":[
-                            [{"text":"🔗 کپی لینک نظرسنجی","url":link}],
-                            [{"text":"📈 مشاهده گزارش دقیق آرا","callback_data":f"report_{p_id}"}]
-                        ]
-                    }
-
-                    bot_api("sendMessage",{
-                        "chat_id":chat_id,
-                        "text":f"✅ نظرسنجی ساخته شد\n\n{link}",
-                        "reply_markup":btn
-                    })
-
-                    user_state.pop(user_id)
-
+                    if len(st["opts"]) < 2:
+                        bot_api("sendMessage", {"chat_id": chat_id, "text": "حداقل ۲ گزینه بفرستید."})
+                    else:
+                        p_id = str(len(polls) + 1)
+                        polls[p_id] = {"q": st["q"], "img": st.get("img"), "opts": st["opts"], "votes": [0]*len(st["opts"]), "users": {}}
+                        save_db(polls)
+                        link = f"https://ble.ir/{get_bot_username()}?start={p_id}"
+                        btns = {"inline_keyboard": [[{"text": "🔗 لینک انتشار", "url": link}], [{"text": "📈 گزارش آرا", "callback_data": f"rep_{p_id}"}]]}
+                        bot_api("sendMessage", {"chat_id": chat_id, "text": f"✅ ساخته شد!\n\nلینک کپی:\n`{link}`", "reply_markup": btns, "parse_mode": "Markdown"})
+                        del user_state[user_id]
                 else:
-
-                    state["opts"].append(text)
-
-                    bot_api("sendMessage", {
-                        "chat_id": chat_id,
-                        "text": "گزینه بعدی را بفرستید یا /done"
-                    })
-
-    # ---------------- CALLBACK ----------------
+                    st["opts"].append(text)
+                    bot_api("sendMessage", {"chat_id": chat_id, "text": f"گزینه {len(st['opts'])+1} را بفرستید یا پایان با /done"})
 
     if "callback_query" in data:
-
         cq = data["callback_query"]
-        user_id = cq["from"]["id"]
-        chat_id = cq["message"]["chat"]["id"]
-        message_id = cq["message"]["message_id"]
-        data_cb = cq["data"]
+        u_id, c_id, m_id, cb_data = cq["from"]["id"], cq["message"]["chat"]["id"], cq["message"]["message_id"], cq["data"]
 
-        # membership check button
-        if data_cb.startswith("checkjoin_"):
+        if cb_data.startswith("check_"):
+            p_id = cb_data.split("_")[1]
+            if check_membership(u_id):
+                bot_api("editMessageReplyMarkup", {"chat_id": c_id, "message_id": m_id, "reply_markup": {"inline_keyboard": [[{"text": "✅ عضویت تایید شد", "callback_data": "none"}]]}})
+                poll = polls.get(p_id)
+                kb = render_poll(p_id, poll)
+                bot_api("sendMessage", {"chat_id": c_id, "text": f"📊 {poll['q']}", "reply_markup": kb})
+            else:
+                bot_api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "❌ هنوز عضو نیستید!", "show_alert": True})
 
-            p_id = data_cb.split("_")[1]
-
-            if not check_membership(user_id):
-
-                bot_api("answerCallbackQuery", {
-                    "callback_query_id": cq["id"],
-                    "text": "❌ هنوز عضو کانال نشده‌اید",
-                    "show_alert": True
-                })
-
-                return "ok"
-
-            # change button to ✅
-            buttons = {
-                "inline_keyboard":[
-                    [{"text":"✅ عضویت تایید شد","callback_data":"ok"}]
-                ]
-            }
-
-            bot_api("editMessageReplyMarkup",{
-                "chat_id":chat_id,
-                "message_id":message_id,
-                "reply_markup":buttons
-            })
-
+        elif cb_data.startswith("v_"):
+            _, p_id, opt_idx = cb_data.split("_")
+            opt_idx = int(opt_idx)
             poll = polls.get(p_id)
+            if poll:
+                old_v = poll["users"].get(str(u_id))
+                if old_v is not None: poll["votes"][old_v] -= 1
+                poll["votes"][opt_idx] += 1
+                poll["users"][str(u_id)] = opt_idx
+                save_db(polls)
+                bot_api("editMessageReplyMarkup", {"chat_id": c_id, "message_id": m_id, "reply_markup": render_poll(p_id, poll, opt_idx)})
 
-            keyboard = render_poll(p_id,poll)
-
-            bot_api("sendMessage",{
-                "chat_id":chat_id,
-                "text":f"📊 {poll['q']}",
-                "reply_markup":keyboard
-            })
-
-            return "ok"
-
-        # voting
-        if data_cb.startswith("v_"):
-
-            _,p_id,opt = data_cb.split("_")
-            opt = int(opt)
-
+        elif cb_data.startswith("rep_"):
+            p_id = cb_data.split("_")[1]
             poll = polls.get(p_id)
-
-            if not poll:
-                return "ok"
-
-            prev = poll["users"].get(user_id)
-
-            if prev is not None:
-                poll["votes"][prev] -= 1
-
-            poll["votes"][opt] += 1
-            poll["users"][user_id] = opt
-
-            keyboard = render_poll(p_id,poll,opt)
-
-            bot_api("editMessageReplyMarkup",{
-                "chat_id":chat_id,
-                "message_id":message_id,
-                "reply_markup":keyboard
-            })
-
-        # report
-        if data_cb.startswith("report_"):
-
-            p_id = data_cb.split("_")[1]
-            poll = polls.get(p_id)
-
-            if not poll:
-                return "ok"
-
-            total = sum(poll["votes"])
-
-            ranking = []
-
-            for i,opt in enumerate(poll["opts"]):
-
-                v = poll["votes"][i]
-
-                percent = 0
-                if total > 0:
-                    percent = round((v/total)*100)
-
-                ranking.append((opt,v,percent))
-
-            ranking.sort(key=lambda x: x[1],reverse=True)
-
-            nums = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣"]
-
-            text = "📈 گزارش دقیق آرا\n\n"
-
-            for i,(opt,v,p) in enumerate(ranking):
-                text += f"{nums[i]} {opt}\n{v} رای — {p}%\n\n"
-
-            bot_api("answerCallbackQuery",{
-                "callback_query_id":cq["id"],
-                "text":"گزارش ارسال شد"
-            })
-
-            bot_api("sendMessage",{
-                "chat_id":chat_id,
-                "text":text
-            })
+            if poll:
+                res = sorted(zip(poll["opts"], poll["votes"]), key=lambda x: x[1], reverse=True)
+                total = sum(poll["votes"])
+                txt = "📈 گزارش آرا:\n\n"
+                icons = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+                for i, (o, v) in enumerate(res):
+                    p = round((v/total)*100) if total > 0 else 0
+                    txt += f"{icons[i] if i<5 else '🔹'} {o}\n{v} رای ({p}%)\n\n"
+                bot_api("sendMessage", {"chat_id": c_id, "text": txt})
 
     return "ok"
 
-
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080)
-
 
