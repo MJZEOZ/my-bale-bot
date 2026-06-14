@@ -4,35 +4,16 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-# --- تنظیمات ---
-TOKEN = os.environ.get("BOT_TOKEN", "1634412047:jRQE064aVdzbIOfF9qWZ-u9tkyzwhrN68QU")
+# --- تنظیمات توکن ---
+TOKEN = os.environ.get("BOT_TOKEN")
 BASE_URL = f"https://tapi.bale.ai/bot{TOKEN}"
 
+# حافظه موقت (بعد از ریست شدن رندر پاک می‌شود)
 user_state = {}
 polls = {}
 
 def bot_api(method, data=None):
-    try:
-        return requests.post(f"{BASE_URL}/{method}", json=data)
-    except Exception as e:
-        print(f"Error calling API: {e}")
-        return None
-
-def get_bot_username():
-    try:
-        res = requests.get(f"{BASE_URL}/getMe").json()
-        return res.get("result", {}).get("username", "bot")
-    except:
-        return "bot"
-
-def check_admin(channel_id, user_id):
-    try:
-        res = bot_api("getChatMember", {"chat_id": channel_id, "user_id": user_id}).json()
-        if not res.get("ok"):
-            return False
-        return res["result"]["status"] in ["administrator", "creator"]
-    except:
-        return False
+    return requests.post(f"{BASE_URL}/{method}", json=data)
 
 @app.route("/", methods=["GET", "POST"])
 def receive_update():
@@ -40,8 +21,7 @@ def receive_update():
         return "Bot is Online", 200
 
     update = request.get_json(silent=True)
-    if not update:
-        return "ok", 200
+    if not update: return "ok", 200
 
     if "message" in update:
         msg = update["message"]
@@ -49,54 +29,58 @@ def receive_update():
         user_id = msg["from"]["id"]
         text = msg.get("text", "")
 
-        if text.startswith("/start"):
-            if " " in text:
-                p_id = text.split(" ")[1]
-                poll = polls.get(p_id)
-                if poll:
-                    buttons = [[{"text": opt, "callback_data": f"v_{p_id}_{i}"}] for i, opt in enumerate(poll["opts"])]
-                    cap = f"📊 {poll['q']}"
-                    if poll["img"]:
-                        bot_api("sendPhoto", {"chat_id": chat_id, "photo": poll["img"], "caption": cap, "reply_markup": {"inline_keyboard": buttons}})
-                    else:
-                        bot_api("sendMessage", {"chat_id": chat_id, "text": cap, "reply_markup": {"inline_keyboard": buttons}})
-                    return "ok"
-
-            user_state[user_id] = None
-            markup = {"keyboard": [[{"text": "🚀 ساخت نظرسنجی جدید"}]], "resize_keyboard": True}
-            bot_api("sendMessage", {"chat_id": chat_id, "text": "به ربات نظرسنجی خوش آمدید", "reply_markup": markup})
-
-        elif text == "🚀 ساخت نظرسنجی جدید":
+        # شروع ساخت نظرسنجی
+        if text == "/start" or text == "🚀 ساخت نظرسنجی جدید":
             user_state[user_id] = {"step": "get_q"}
-            bot_api("sendMessage", {"chat_id": chat_id, "text": "۱- متن سوال نظرسنجی را بفرستید", "reply_markup": {"remove_keyboard": True}})
+            bot_api("sendMessage", {
+                "chat_id": chat_id, 
+                "text": "🔴 مرحله ۱: سوال نظرسنجی را بنویسید:",
+                "reply_markup": {"remove_keyboard": True}
+            })
 
-        elif user_id in user_state and user_state[user_id]:
-            state = user_state[user_id]
-            if state.get("step") == "get_q":
-                state.update({"q": text, "step": "get_img"})
-                bot_api("sendMessage", {"chat_id": chat_id, "text": "۲- عکس بفرستید یا بدون عکس ادامه دهید", "reply_markup": {"inline_keyboard": [[{"text": "❌ بدون عکس", "callback_data": "skip_img"}]]}})
-            elif state.get("step") == "get_img" and "photo" in msg:
-                state.update({"img": msg["photo"][-1]["file_id"], "opts": [], "step": "get_opts"})
-                bot_api("sendMessage", {"chat_id": chat_id, "text": "۳- اولین گزینه را بفرستید"})
-            elif state.get("step") == "get_opts":
-                state["opts"].append(text)
-                bot_api("sendMessage", {"chat_id": chat_id, "text": f"گزینه '{text}' ثبت شد. بعدی را بفرستید یا تمام کنید:", "reply_markup": {"inline_keyboard": [[{"text": "✅ تکمیل نظرسنجی", "callback_data": "finish_poll"}]]}})
-            elif state.get("step") == "get_channel":
-                p_id = state.get("poll_id")
-                channel = text if text.startswith("@") else f"@{text}"
-                poll = polls.get(p_id)
-                if poll:
-                    if check_admin(channel, user_id):
-                        buttons = [[{"text": opt, "callback_data": f"v_{p_id}_{i}"}] for i, opt in enumerate(poll["opts"])]
-                        cap = f"📊 {poll['q']}"
-                        if poll["img"]:
-                            bot_api("sendPhoto", {"chat_id": channel, "photo": poll["img"], "caption": cap, "reply_markup": {"inline_keyboard": buttons}})
-                        else:
-                            bot_api("sendMessage", {"chat_id": channel, "text": cap, "reply_markup": {"inline_keyboard": buttons}})
-                        bot_api("sendMessage", {"chat_id": chat_id, "text": f"✅ نظرسنجی با موفقیت در {channel} منتشر شد."})
-                        user_state[user_id] = None
-                    else:
-                        bot_api("sendMessage", {"chat_id": chat_id, "text": "❌ خطا: یا نام کانال اشتباه است، یا ربات در آن ادمین نیست و یا شما ادمین آن نیستید."})
+        # دریافت سوال
+        elif user_id in user_state and user_state[user_id]["step"] == "get_q":
+            user_state[user_id].update({"q": text, "opts": [], "step": "get_opts"})
+            bot_api("sendMessage", {
+                "chat_id": chat_id, 
+                "text": "🟢 مرحله ۲: حالا گزینه‌ها را یکی یکی بفرستید. حداقل ۲ گزینه لازم است.\n\nبعد از اتمام، روی دکمه 'تایید نهایی' بزنید.",
+                "reply_markup": {
+                    "inline_keyboard": [[{"text": "✅ تایید نهایی و انتشار", "callback_data": "finish"}]]
+                }
+            })
+
+        # دریافت گزینه‌ها
+        elif user_id in user_state and user_state[user_id]["step"] == "get_opts":
+            user_state[user_id]["opts"].append(text)
+            bot_api("sendMessage", {
+                "chat_id": chat_id, 
+                "text": f"گزینه '{text}' ثبت شد. گزینه بعدی را بفرستید یا تایید کنید.",
+                "reply_markup": {
+                    "inline_keyboard": [[{"text": "✅ تایید نهایی و انتشار", "callback_data": "finish"}]]
+                }
+            })
+
+        # دریافت آیدی کانال برای انتشار مستقیم
+        elif user_id in user_state and user_state[user_id]["step"] == "get_channel":
+            channel_id = text if text.startswith("@") else f"@{text}"
+            p_id = user_state[user_id]["poll_id"]
+            poll = polls[p_id]
+
+            # ساخت دکمه‌های رای‌گیری
+            btns = [[{"text": opt, "callback_data": f"v_{p_id}_{i}"}] for i, opt in enumerate(poll["opts"])]
+            
+            # ارسال مستقیم به کانال
+            res = bot_api("sendMessage", {
+                "chat_id": channel_id,
+                "text": f"📊 {poll['q']}\n\n(برای رای دادن روی گزینه‌ها کلیک کنید)",
+                "reply_markup": {"inline_keyboard": btns}
+            })
+
+            if res.status_code == 200:
+                bot_api("sendMessage", {"chat_id": chat_id, "text": f"✅ نظرسنجی با موفقیت در کانال {channel_id} منتشر شد!"})
+                user_state[user_id] = None
+            else:
+                bot_api("sendMessage", {"chat_id": chat_id, "text": "❌ خطا! مطمئن شوید ربات در کانال ادمین است و آیدی را درست وارد کردید."})
 
     elif "callback_query" in update:
         cq = update["callback_query"]
@@ -104,26 +88,19 @@ def receive_update():
         user_id = cq["from"]["id"]
         chat_id = cq["message"]["chat"]["id"]
 
-        if data == "skip_img":
-            if user_id in user_state and user_state[user_id]:
-                user_state[user_id].update({"img": None, "opts": [], "step": "get_opts"})
-                bot_api("sendMessage", {"chat_id": chat_id, "text": "۳- گزینه‌های نظرسنجی را بفرستید"})
-
-        elif data == "finish_poll":
+        # پایان ساخت و درخواست آیدی کانال
+        if data == "finish":
             state = user_state.get(user_id)
-            if state and len(state.get("opts", [])) >= 2:
+            if state and len(state["opts"]) >= 2:
                 p_id = str(len(polls) + 1)
-                polls[p_id] = {"q": state["q"], "img": state.get("img"), "opts": state["opts"], "votes": [0]*len(state["opts"]), "users": []}
-                share_link = f"https://ble.ir/{get_bot_username()}?start={p_id}"
-                markup = {"inline_keyboard": [[{"text": "🔗 لینک اشتراک", "url": share_link}], [{"text": "📢 انتشار در کانال", "callback_data": f"pub_{p_id}"}]]}
-                bot_api("sendMessage", {"chat_id": chat_id, "text": "✅ نظرسنجی ساخته شد. می‌توانید لینک را کپی کنید یا مستقیم در کانال منتشر کنید:", "reply_markup": markup})
-                user_state[user_id] = None
-
-        elif data.startswith("pub_"):
-            p_id = data.split("_")[1]
-            user_state[user_id] = {"step": "get_channel", "poll_id": p_id}
-            bot_api("sendMessage", {"chat_id": chat_id, "text": "نام کاربری کانال را بفرستید (مثلاً @wamsara):\n\n*(دقت کنید ربات باید در کانال ادمین باشد)*"})
-
+                polls[p_id] = {"q": state["q"], "opts": state["opts"], "votes": [0]*len(state["opts"]), "users": []}
+                user_state[user_id] = {"step": "get_channel", "poll_id": p_id}
+                bot_api("sendMessage", {
+                    "chat_id": chat_id, 
+                    "text": "📢 آیدی کانال را بفرستید تا نظرسنجی فوراً آنجا منتشر شود:\nمثلاً: @my_channel"
+                })
+        
+        # پردازش رای‌ها در کانال
         elif data.startswith("v_"):
             p_id, opt_idx = data.split("_")[1], int(data.split("_")[2])
             poll = polls.get(p_id)
@@ -132,17 +109,22 @@ def receive_update():
                     poll["votes"][opt_idx] += 1
                     poll["users"].append(user_id)
                     total = sum(poll["votes"])
-                    res_text = f"📊 {poll['q']}\n\n"
+                    
+                    # آپدیت متن نظرسنجی با نتایج جدید
+                    new_text = f"📊 {poll['q']}\n\n"
                     for i, o in enumerate(poll["opts"]):
                         p = (poll["votes"][i]/total*100) if total > 0 else 0
-                        res_text += f"{o}: {int(p)}% ({poll['votes'][i]} رای)\n"
+                        new_text += f"{o}: {int(p)}% ({poll['votes'][i]} رای)\n"
                     
-                    method = "editMessageCaption" if poll["img"] else "editMessageText"
-                    field = "caption" if poll["img"] else "text"
-                    bot_api(method, {"chat_id": chat_id, "message_id": cq["message"]["message_id"], field: res_text, "reply_markup": cq["message"]["reply_markup"]})
-                    bot_api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "✅ رای شما ثبت شد."})
+                    bot_api("editMessageText", {
+                        "chat_id": chat_id,
+                        "message_id": cq["message"]["message_id"],
+                        "text": new_text,
+                        "reply_markup": cq["message"]["reply_markup"]
+                    })
+                    bot_api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "رای شما ثبت شد"})
                 else:
-                    bot_api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "⚠️ شما قبلاً رای داده‌اید.", "show_alert": True})
+                    bot_api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "قبلاً رای داده‌اید", "show_alert": True})
 
     return "ok", 200
 
