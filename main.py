@@ -31,11 +31,14 @@ def check_membership(user_id):
     # این تابع را بسته به نیاز دقیق‌تان می‌توانید تکمیل کنید
     return True 
 
-@app.route("/", methods=["POST"])
+@app.route("/", methods=["GET", "POST"])
 def webhook():
-    update = request.get_json()
+    if request.method == "GET":
+        return "ok", 200
+
+    update = request.get_json(silent=True)
     if not update:
-        return "ok"
+        return "ok", 200
 
     polls = load_polls()
     
