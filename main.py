@@ -18,8 +18,8 @@ def bot_api(method, data=None):
 def get_bot_username():
     try:
         res = requests.get(f"{BASE_URL}/getMe").json()
-        return res.get("result", {}).get("username", "bot")
-    except: return "bot"
+        return res.get("result", {}).get("username", "vamclcbot")
+    except: return "vamclcbot"
 
 def check_membership(user_id):
     try:
@@ -38,6 +38,7 @@ def receive_update():
         user_id = msg["from"]["id"]
         text = msg.get("text", "")
 
+        # مدیریت استارت و لینک‌های اشتراک‌گذاری
         if text.startswith("/start"):
             if " " in text:
                 p_id = text.split(" ")[1]
@@ -87,15 +88,20 @@ def receive_update():
                 p_id = str(len(polls) + 1)
                 polls[p_id] = {"q": state["q"], "img": state["img"], "opts": state["opts"], "votes": [0]*len(state["opts"]), "users": [], "creator": user_id}
                 
+                # پیش‌نمایش خام (بدون آمار) مطابق عکس دوم
                 buttons = [[{"text": opt, "callback_data": f"v_{p_id}_{i}"}] for i, opt in enumerate(state["opts"])]
+                cap = f"📊 {state['q']}"
                 if state["img"]:
-                    bot_api("sendPhoto", {"chat_id": chat_id, "photo": state["img"], "caption": f"📊 {state['q']}", "reply_markup": {"inline_keyboard": buttons}})
+                    bot_api("sendPhoto", {"chat_id": chat_id, "photo": state["img"], "caption": cap, "reply_markup": {"inline_keyboard": buttons}})
                 else:
-                    bot_api("sendMessage", {"chat_id": chat_id, "text": f"📊 {state['q']}", "reply_markup": {"inline_keyboard": buttons}})
+                    bot_api("sendMessage", {"chat_id": chat_id, "text": cap, "reply_markup": {"inline_keyboard": buttons}})
                 
                 share_link = f"https://ble.ir/{get_bot_username()}?start={p_id}"
-                m_btns = {"inline_keyboard": [[{"text": "🔗 اشتراک‌گذاری در بله", "url": f"https://ble.ir/share/url?url={share_link}"}],[{"text": "📈 مشاهده گزارش دقیق آرا", "callback_data": f"report_{p_id}"}]]}
-                bot_api("sendMessage", {"chat_id": chat_id, "text": f"✅ نظرسنجی آماده است!\n\n🔗 لینک مستقیم:\n{share_link}", "reply_markup": m_btns})
+                m_btns = {"inline_keyboard": [
+                    [{"text": "🔗 اشتراک‌گذاری مستقیم در بله", "url": f"https://ble.ir/share/url?url={share_link}"}],
+                    [{"text": "📈 مشاهده گزارش دقیق آرا", "callback_data": f"report_{p_id}"}]
+                ]}
+                bot_api("sendMessage", {"chat_id": chat_id, "text": f"✅ نظرسنجی ساخته شد.\nبرای انتشار در کانال، از دکمه اشتراک‌گذاری استفاده کنید یا لینک زیر را کپی کنید:\n\n{share_link}", "reply_markup": m_btns})
                 user_state[user_id] = None
 
         elif data.startswith("report_"):
@@ -103,28 +109,30 @@ def receive_update():
             poll = polls.get(p_id)
             if poll:
                 total = sum(poll["votes"])
-                # ایجاد لیست برای مرتب‌سازی (نام گزینه، تعداد رای، ایندکس اصلی)
-                results = []
-                for i, o in enumerate(poll["opts"]):
-                    results.append({"text": o, "votes": poll["votes"][i]})
-                
-                # مرتب‌سازی نزولی بر اساس تعداد رای
+                results = [{"text": o, "votes": poll["votes"][i]} for i, o in enumerate(poll["opts"])]
                 sorted_results = sorted(results, key=lambda x: x["votes"], reverse=True)
                 
-                report = f"📈 گزارش آرا (به ترتیب بیشترین): \n❓ {poll['q']}\n\n"
+                report = f"📈 گزارش آرا (اولویت بیشترین): \n❓ {poll['q']}\n\n"
                 rank_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-                
                 for idx, item in enumerate(sorted_results):
                     p = (item["votes"]/total*100) if total > 0 else 0
                     emoji = rank_emojis[idx] if idx < 10 else "🔹"
                     report += f"{emoji} {item['text']}\n└─ تعداد: {item['votes']} رای ({int(p)}%)\n\n"
-                
-                report += f"👥 مجموع کل آرا: {total}"
                 bot_api("sendMessage", {"chat_id": chat_id, "text": report})
 
         elif data.startswith("v_"):
             if not check_membership(user_id):
-                bot_api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": f"❌ ابتدا عضو کانال {CHANNEL_ID} شوید.", "show_alert": True})
+                # دکمه ورود به کانال به صورت شیشه‌ای برای آبی شدن لینک
+                join_btns = {"inline_keyboard": [
+                    [{"text": "📢 ورود به کانال و عضویت", "url": f"https://ble.ir/{CHANNEL_ID.replace('@','')}"}],
+                    [{"text": "✅ عضو شدم (ثبت رای)", "callback_data": data}]
+                ]}
+                bot_api("sendMessage", {
+                    "chat_id": chat_id, 
+                    "text": f"⚠️ برای ثبت رای باید عضو کانال زیر باشید:\n{CHANNEL_ID}", 
+                    "reply_markup": join_btns
+                })
+                bot_api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "ابتدا عضو کانال شوید"})
                 return "ok"
             
             p_id, opt_idx = data.split("_")[1], int(data.split("_")[2])
@@ -141,10 +149,11 @@ def receive_update():
                 method = "editMessageCaption" if poll["img"] else "editMessageText"
                 field = "caption" if poll["img"] else "text"
                 bot_api(method, {"chat_id": chat_id, "message_id": cq["message"]["message_id"], field: res_text, "reply_markup": cq["message"]["reply_markup"]})
-                bot_api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "رای ثبت شد."})
+                bot_api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "رای شما ثبت شد."})
 
     return "ok"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
 
