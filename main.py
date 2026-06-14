@@ -76,3 +76,4 @@
             
             bot_api("answerCallbackQuery", {"callback_query_id": cq["id"], "text": "رای شما ثبت/تغییر یافت."})
 
+
